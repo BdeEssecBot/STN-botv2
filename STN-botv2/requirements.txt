@@ -1,0 +1,26 @@
+
+# STN-bot v2 - Dépendances
+# Architecture Streamlit Native - Plus de dépendances Notion !
+
+# Core Streamlit
+streamlit==1.28.0
+pandas==2.1.0
+plotly==5.17.0
+
+# API Calls
+requests==2.31.0
+
+# Configuration
+python-dotenv==1.0.0
+
+# Data Processing
+numpy==1.24.0
+
+# Date/Time utilities
+python-dateutil==2.8.2
+
+# Optional: Excel export functionality
+openpyxl==3.1.0
+
+# Optional: Advanced charts
+altair==5.1.0

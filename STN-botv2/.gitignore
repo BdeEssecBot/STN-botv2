@@ -1,0 +1,45 @@
+# STN-bot v2 - Git Ignore
+
+# Environment variables (CRITICAL - NEVER commit!)
+.env
+.env.local
+.env.production
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.py.bak
+
+# Streamlit cache
+.streamlit/secrets.toml
+
+# IDE files
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# Logs
+*.log
+logs/
+
+# Virtual environment
+venv/
+env/
+.venv/
+.env/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Data exports (optionnel si vous voulez garder)
+exports/
+*.xlsx
+*.csv
+
+# Temporary files
+temp/
+tmp/
