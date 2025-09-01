@@ -1,12 +1,12 @@
 # database/sqlite_manager.py
-"""Gestionnaire SQLite pour STN-bot v2 avec persistance complète"""
+"""Gestionnaire SQLite pour STN-bot v2 avec persistance complète - VERSION FINALE CORRIGÉE"""
 
 import sqlite3
 import json
 import logging
 from pathlib import Path
 from typing import List, Dict, Optional, Any, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta  # <- CORRECTION: timedelta ajouté
 import uuid
 
 from database.models import Person, Form, Response, ReminderStats
@@ -23,8 +23,9 @@ class SQLiteDatabase:
         logger.info(f"Base SQLite initialisée: {self.db_path}")
     
     def _create_tables(self):
-        """Crée les tables SQLite"""
+        """Crée les tables SQLite avec syntaxe compatible"""
         with sqlite3.connect(self.db_path) as conn:
+            # Table people - SYNTAXE CORRIGÉE
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS people (
                     id TEXT PRIMARY KEY,
@@ -32,18 +33,30 @@ class SQLiteDatabase:
                     email TEXT,
                     psid TEXT,
                     created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    UNIQUE(email) WHERE email IS NOT NULL,
-                    UNIQUE(psid) WHERE psid IS NOT NULL
+                    updated_at TEXT NOT NULL
                 )
             """)
             
+            # Index uniques séparés pour email et psid - SOLUTION PROPRE
+            conn.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_people_email 
+                ON people(email) 
+                WHERE email IS NOT NULL AND email != ''
+            """)
+            
+            conn.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_people_psid 
+                ON people(psid) 
+                WHERE psid IS NOT NULL AND psid != ''
+            """)
+            
+            # Table forms
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS forms (
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
-                    google_form_id TEXT NOT NULL UNIQUE,
-                    expected_people_ids TEXT, -- JSON list of person IDs
+                    google_form_id TEXT NOT NULL,
+                    expected_people_ids TEXT,
                     description TEXT,
                     date_envoi TEXT,
                     is_active BOOLEAN DEFAULT 1,
@@ -52,6 +65,13 @@ class SQLiteDatabase:
                 )
             """)
             
+            # Index unique pour google_form_id
+            conn.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_forms_google_id 
+                ON forms(google_form_id)
+            """)
+            
+            # Table responses
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS responses (
                     id TEXT PRIMARY KEY,
@@ -65,11 +85,17 @@ class SQLiteDatabase:
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL,
                     FOREIGN KEY (form_id) REFERENCES forms (id) ON DELETE CASCADE,
-                    FOREIGN KEY (person_id) REFERENCES people (id) ON DELETE CASCADE,
-                    UNIQUE(form_id, person_id)
+                    FOREIGN KEY (person_id) REFERENCES people (id) ON DELETE CASCADE
                 )
             """)
             
+            # Index unique pour form_id + person_id
+            conn.execute("""
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_responses_form_person 
+                ON responses(form_id, person_id)
+            """)
+            
+            # Table app_metadata
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS app_metadata (
                     key TEXT PRIMARY KEY,
@@ -79,14 +105,34 @@ class SQLiteDatabase:
             """)
             
             conn.commit()
-            logger.info("Tables SQLite créées/vérifiées")
+            logger.info("Tables SQLite créées/vérifiées avec syntaxe corrigée")
     
     # ============ PEOPLE MANAGEMENT ============
     
     def add_person(self, person: Person) -> bool:
-        """Ajoute une personne"""
+        """Ajoute une personne avec gestion des doublons améliorée"""
         try:
             with sqlite3.connect(self.db_path) as conn:
+                # Vérifier les doublons manuellement
+                if person.email:
+                    existing = conn.execute(
+                        "SELECT id FROM people WHERE LOWER(email) = LOWER(?)", 
+                        (person.email,)
+                    ).fetchone()
+                    if existing:
+                        logger.warning(f"Email déjà existant: {person.email}")
+                        return False
+                
+                if person.psid:
+                    existing = conn.execute(
+                        "SELECT id FROM people WHERE psid = ?", 
+                        (person.psid,)
+                    ).fetchone()
+                    if existing:
+                        logger.warning(f"PSID déjà existant: {person.psid}")
+                        return False
+                
+                # Insérer la nouvelle personne
                 conn.execute("""
                     INSERT INTO people (id, name, email, psid, created_at, updated_at)
                     VALUES (?, ?, ?, ?, ?, ?)
@@ -97,8 +143,9 @@ class SQLiteDatabase:
                 conn.commit()
                 logger.info(f"Personne ajoutée: {person.name}")
                 return True
-        except sqlite3.IntegrityError as e:
-            logger.warning(f"Doublon personne: {e}")
+                
+        except sqlite3.Error as e:
+            logger.error(f"Erreur SQLite ajout personne: {e}")
             return False
         except Exception as e:
             logger.error(f"Erreur ajout personne: {e}")
@@ -108,13 +155,17 @@ class SQLiteDatabase:
         """Récupère toutes les personnes"""
         try:
             with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row  # Pour accéder par nom de colonne
                 cursor = conn.execute("SELECT * FROM people ORDER BY name")
                 people = []
                 for row in cursor:
                     person = Person(
-                        id=row[0], name=row[1], email=row[2], psid=row[3],
-                        created_at=datetime.fromisoformat(row[4]),
-                        updated_at=datetime.fromisoformat(row[5])
+                        id=row['id'], 
+                        name=row['name'], 
+                        email=row['email'], 
+                        psid=row['psid'],
+                        created_at=datetime.fromisoformat(row['created_at']),
+                        updated_at=datetime.fromisoformat(row['updated_at'])
                     )
                     people.append(person)
                 return people
@@ -126,13 +177,17 @@ class SQLiteDatabase:
         """Récupère une personne par ID"""
         try:
             with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
                 cursor = conn.execute("SELECT * FROM people WHERE id = ?", (person_id,))
                 row = cursor.fetchone()
                 if row:
                     return Person(
-                        id=row[0], name=row[1], email=row[2], psid=row[3],
-                        created_at=datetime.fromisoformat(row[4]),
-                        updated_at=datetime.fromisoformat(row[5])
+                        id=row['id'],
+                        name=row['name'], 
+                        email=row['email'], 
+                        psid=row['psid'],
+                        created_at=datetime.fromisoformat(row['created_at']),
+                        updated_at=datetime.fromisoformat(row['updated_at'])
                     )
             return None
         except Exception as e:
@@ -143,13 +198,17 @@ class SQLiteDatabase:
         """Récupère une personne par email"""
         try:
             with sqlite3.connect(self.db_path) as conn:
-                cursor = conn.execute("SELECT * FROM people WHERE LOWER(email) = ?", (email.lower(),))
+                conn.row_factory = sqlite3.Row
+                cursor = conn.execute("SELECT * FROM people WHERE LOWER(email) = LOWER(?)", (email,))
                 row = cursor.fetchone()
                 if row:
                     return Person(
-                        id=row[0], name=row[1], email=row[2], psid=row[3],
-                        created_at=datetime.fromisoformat(row[4]),
-                        updated_at=datetime.fromisoformat(row[5])
+                        id=row['id'],
+                        name=row['name'],
+                        email=row['email'],
+                        psid=row['psid'],
+                        created_at=datetime.fromisoformat(row['created_at']),
+                        updated_at=datetime.fromisoformat(row['updated_at'])
                     )
             return None
         except Exception as e:
@@ -160,13 +219,17 @@ class SQLiteDatabase:
         """Récupère une personne par PSID"""
         try:
             with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
                 cursor = conn.execute("SELECT * FROM people WHERE psid = ?", (psid,))
                 row = cursor.fetchone()
                 if row:
                     return Person(
-                        id=row[0], name=row[1], email=row[2], psid=row[3],
-                        created_at=datetime.fromisoformat(row[4]),
-                        updated_at=datetime.fromisoformat(row[5])
+                        id=row['id'],
+                        name=row['name'],
+                        email=row['email'],
+                        psid=row['psid'],
+                        created_at=datetime.fromisoformat(row['created_at']),
+                        updated_at=datetime.fromisoformat(row['updated_at'])
                     )
             return None
         except Exception as e:
@@ -178,8 +241,8 @@ class SQLiteDatabase:
         try:
             with sqlite3.connect(self.db_path) as conn:
                 # Les réponses sont supprimées automatiquement (CASCADE)
-                cursor = conn.execute("DELETE FROM people WHERE id = ?", (person_id,))
-                deleted = cursor.rowcount > 0
+                cursor = conn.execute("DELETE FROM people WHERE id = ?", (person_id,))  # <- CORRECTION
+                deleted = cursor.rowcount > 0  # <- CORRECTION: cursor.rowcount
                 conn.commit()
                 if deleted:
                     logger.info(f"Personne {person_id} supprimée")
@@ -194,6 +257,15 @@ class SQLiteDatabase:
         """Ajoute un formulaire avec les personnes attendues"""
         try:
             with sqlite3.connect(self.db_path) as conn:
+                # Vérifier doublon Google Form ID
+                existing = conn.execute(
+                    "SELECT id FROM forms WHERE google_form_id = ?", 
+                    (form.google_form_id,)
+                ).fetchone()
+                if existing:
+                    logger.warning(f"Google Form ID déjà existant: {form.google_form_id}")
+                    return False
+                
                 # Ajouter le formulaire
                 conn.execute("""
                     INSERT INTO forms (id, name, google_form_id, expected_people_ids, description, 
@@ -224,8 +296,9 @@ class SQLiteDatabase:
                 conn.commit()
                 logger.info(f"Formulaire ajouté: {form.name} avec {len(expected_people_ids)} personnes attendues")
                 return True
-        except sqlite3.IntegrityError as e:
-            logger.warning(f"Doublon formulaire: {e}")
+                
+        except sqlite3.Error as e:
+            logger.error(f"Erreur SQLite ajout formulaire: {e}")
             return False
         except Exception as e:
             logger.error(f"Erreur ajout formulaire: {e}")
@@ -235,18 +308,21 @@ class SQLiteDatabase:
         """Récupère tous les formulaires avec leurs personnes attendues"""
         try:
             with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
                 cursor = conn.execute("SELECT * FROM forms ORDER BY created_at DESC")
                 forms = []
                 for row in cursor:
                     form = Form(
-                        id=row[0], name=row[1], google_form_id=row[2],
-                        description=row[4] or "",
-                        date_envoi=datetime.fromisoformat(row[5]) if row[5] else None,
-                        is_active=bool(row[6]),
-                        created_at=datetime.fromisoformat(row[7]),
-                        updated_at=datetime.fromisoformat(row[8])
+                        id=row['id'], 
+                        name=row['name'], 
+                        google_form_id=row['google_form_id'],
+                        description=row['description'] or "",
+                        date_envoi=datetime.fromisoformat(row['date_envoi']) if row['date_envoi'] else None,
+                        is_active=bool(row['is_active']),
+                        created_at=datetime.fromisoformat(row['created_at']),
+                        updated_at=datetime.fromisoformat(row['updated_at'])
                     )
-                    expected_people_ids = json.loads(row[3]) if row[3] else []
+                    expected_people_ids = json.loads(row['expected_people_ids']) if row['expected_people_ids'] else []
                     forms.append((form, expected_people_ids))
                 return forms
         except Exception as e:
@@ -261,18 +337,21 @@ class SQLiteDatabase:
         """Récupère un formulaire par ID"""
         try:
             with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
                 cursor = conn.execute("SELECT * FROM forms WHERE id = ?", (form_id,))
                 row = cursor.fetchone()
                 if row:
                     form = Form(
-                        id=row[0], name=row[1], google_form_id=row[2],
-                        description=row[4] or "",
-                        date_envoi=datetime.fromisoformat(row[5]) if row[5] else None,
-                        is_active=bool(row[6]),
-                        created_at=datetime.fromisoformat(row[7]),
-                        updated_at=datetime.fromisoformat(row[8])
+                        id=row['id'],
+                        name=row['name'],
+                        google_form_id=row['google_form_id'],
+                        description=row['description'] or "",
+                        date_envoi=datetime.fromisoformat(row['date_envoi']) if row['date_envoi'] else None,
+                        is_active=bool(row['is_active']),
+                        created_at=datetime.fromisoformat(row['created_at']),
+                        updated_at=datetime.fromisoformat(row['updated_at'])
                     )
-                    expected_people_ids = json.loads(row[3]) if row[3] else []
+                    expected_people_ids = json.loads(row['expected_people_ids']) if row['expected_people_ids'] else []
                     return (form, expected_people_ids)
             return None
         except Exception as e:
@@ -283,18 +362,21 @@ class SQLiteDatabase:
         """Récupère un formulaire par Google Form ID"""
         try:
             with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
                 cursor = conn.execute("SELECT * FROM forms WHERE google_form_id = ?", (google_form_id,))
                 row = cursor.fetchone()
                 if row:
                     form = Form(
-                        id=row[0], name=row[1], google_form_id=row[2],
-                        description=row[4] or "",
-                        date_envoi=datetime.fromisoformat(row[5]) if row[5] else None,
-                        is_active=bool(row[6]),
-                        created_at=datetime.fromisoformat(row[7]),
-                        updated_at=datetime.fromisoformat(row[8])
+                        id=row['id'],
+                        name=row['name'],
+                        google_form_id=row['google_form_id'],
+                        description=row['description'] or "",
+                        date_envoi=datetime.fromisoformat(row['date_envoi']) if row['date_envoi'] else None,
+                        is_active=bool(row['is_active']),
+                        created_at=datetime.fromisoformat(row['created_at']),
+                        updated_at=datetime.fromisoformat(row['updated_at'])
                     )
-                    expected_people_ids = json.loads(row[3]) if row[3] else []
+                    expected_people_ids = json.loads(row['expected_people_ids']) if row['expected_people_ids'] else []
                     return (form, expected_people_ids)
             return None
         except Exception as e:
@@ -307,17 +389,21 @@ class SQLiteDatabase:
         """Récupère les réponses d'un formulaire"""
         try:
             with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
                 cursor = conn.execute("SELECT * FROM responses WHERE form_id = ?", (form_id,))
                 responses = []
                 for row in cursor:
                     response = Response(
-                        id=row[0], form_id=row[1], person_id=row[2],
-                        has_responded=bool(row[3]),
-                        response_date=datetime.fromisoformat(row[4]) if row[4] else None,
-                        last_reminder=datetime.fromisoformat(row[5]) if row[5] else None,
-                        reminder_count=row[6], notes=row[7] or "",
-                        created_at=datetime.fromisoformat(row[8]),
-                        updated_at=datetime.fromisoformat(row[9])
+                        id=row['id'], 
+                        form_id=row['form_id'], 
+                        person_id=row['person_id'],
+                        has_responded=bool(row['has_responded']),
+                        response_date=datetime.fromisoformat(row['response_date']) if row['response_date'] else None,
+                        last_reminder=datetime.fromisoformat(row['last_reminder']) if row['last_reminder'] else None,
+                        reminder_count=row['reminder_count'], 
+                        notes=row['notes'] or "",
+                        created_at=datetime.fromisoformat(row['created_at']),
+                        updated_at=datetime.fromisoformat(row['updated_at'])
                     )
                     responses.append(response)
                 return responses
@@ -353,7 +439,7 @@ class SQLiteDatabase:
         """Marque une personne comme ayant répondu"""
         try:
             with sqlite3.connect(self.db_path) as conn:
-                conn.execute("""
+                cursor = conn.execute("""  # <- CORRECTION: cursor au lieu de conn
                     UPDATE responses 
                     SET has_responded = 1, response_date = ?, updated_at = ?
                     WHERE form_id = ? AND person_id = ?
@@ -362,7 +448,7 @@ class SQLiteDatabase:
                     datetime.now().isoformat(),
                     form_id, person_id
                 ))
-                updated = conn.rowcount > 0
+                updated = cursor.rowcount > 0  # <- CORRECTION: cursor.rowcount
                 conn.commit()
                 return updated
         except Exception as e:
@@ -373,7 +459,7 @@ class SQLiteDatabase:
         """Enregistre qu'un rappel a été envoyé"""
         try:
             with sqlite3.connect(self.db_path) as conn:
-                conn.execute("""
+                cursor = conn.execute("""  # <- CORRECTION: cursor au lieu de conn
                     UPDATE responses 
                     SET last_reminder = ?, reminder_count = reminder_count + 1, updated_at = ?
                     WHERE form_id = ? AND person_id = ?
@@ -382,7 +468,7 @@ class SQLiteDatabase:
                     datetime.now().isoformat(),
                     form_id, person_id
                 ))
-                updated = conn.rowcount > 0
+                updated = cursor.rowcount > 0  # <- CORRECTION: cursor.rowcount
                 conn.commit()
                 return updated
         except Exception as e:
@@ -393,6 +479,7 @@ class SQLiteDatabase:
         """Récupère les non-répondants d'un formulaire avec leurs infos"""
         try:
             with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
                 cursor = conn.execute("""
                     SELECT p.*, r.* FROM responses r
                     JOIN people p ON r.person_id = p.id
@@ -402,21 +489,28 @@ class SQLiteDatabase:
                 
                 non_responders = []
                 for row in cursor:
-                    # Person data (indices 0-5)
+                    # Person data
                     person = Person(
-                        id=row[0], name=row[1], email=row[2], psid=row[3],
-                        created_at=datetime.fromisoformat(row[4]),
-                        updated_at=datetime.fromisoformat(row[5])
+                        id=row['id'], 
+                        name=row['name'], 
+                        email=row['email'], 
+                        psid=row['psid'],
+                        created_at=datetime.fromisoformat(row['created_at']),
+                        updated_at=datetime.fromisoformat(row['updated_at'])
                     )
-                    # Response data (indices 6-15)
+                    # Response data - utiliser les colonnes avec préfixe si nécessaire
+                    # SQLite JOIN peut créer des conflits de noms, on utilise les indices
                     response = Response(
-                        id=row[6], form_id=row[7], person_id=row[8],
-                        has_responded=bool(row[9]),
-                        response_date=datetime.fromisoformat(row[10]) if row[10] else None,
-                        last_reminder=datetime.fromisoformat(row[11]) if row[11] else None,
-                        reminder_count=row[12], notes=row[13] or "",
-                        created_at=datetime.fromisoformat(row[14]),
-                        updated_at=datetime.fromisoformat(row[15])
+                        id=row[6],  # r.id
+                        form_id=row[7],  # r.form_id
+                        person_id=row[8],  # r.person_id
+                        has_responded=bool(row[9]),  # r.has_responded
+                        response_date=datetime.fromisoformat(row[10]) if row[10] else None,  # r.response_date
+                        last_reminder=datetime.fromisoformat(row[11]) if row[11] else None,  # r.last_reminder
+                        reminder_count=row[12],  # r.reminder_count
+                        notes=row[13] or "",  # r.notes
+                        created_at=datetime.fromisoformat(row[14]),  # r.created_at
+                        updated_at=datetime.fromisoformat(row[15])  # r.updated_at
                     )
                     non_responders.append((person, response))
                 
@@ -428,9 +522,10 @@ class SQLiteDatabase:
     def get_people_needing_reminders(self, form_id: str, cooldown_hours: int = 24) -> List[Tuple[Person, Response]]:
         """Récupère les personnes pouvant recevoir un rappel"""
         try:
-            cooldown_time = datetime.now() - timedelta(hours=cooldown_hours)
+            cooldown_time = datetime.now() - timedelta(hours=cooldown_hours)  # <- timedelta maintenant importé
             
             with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
                 cursor = conn.execute("""
                     SELECT p.*, r.* FROM responses r
                     JOIN people p ON r.person_id = p.id
@@ -443,16 +538,22 @@ class SQLiteDatabase:
                 ready_for_reminder = []
                 for row in cursor:
                     person = Person(
-                        id=row[0], name=row[1], email=row[2], psid=row[3],
-                        created_at=datetime.fromisoformat(row[4]),
-                        updated_at=datetime.fromisoformat(row[5])
+                        id=row['id'],
+                        name=row['name'],
+                        email=row['email'],
+                        psid=row['psid'],
+                        created_at=datetime.fromisoformat(row['created_at']),
+                        updated_at=datetime.fromisoformat(row['updated_at'])
                     )
                     response = Response(
-                        id=row[6], form_id=row[7], person_id=row[8],
+                        id=row[6],  # r.id
+                        form_id=row[7],  # r.form_id
+                        person_id=row[8],  # r.person_id
                         has_responded=bool(row[9]),
                         response_date=datetime.fromisoformat(row[10]) if row[10] else None,
                         last_reminder=datetime.fromisoformat(row[11]) if row[11] else None,
-                        reminder_count=row[12], notes=row[13] or "",
+                        reminder_count=row[12],
+                        notes=row[13] or "",
                         created_at=datetime.fromisoformat(row[14]),
                         updated_at=datetime.fromisoformat(row[15])
                     )
@@ -596,7 +697,7 @@ class SQLiteDatabase:
                     "forms_count": forms_count,
                     "responses_count": responses_count,
                     "orphaned_responses": orphaned,
-                    "database_version": "2.0-sqlite"
+                    "database_version": "2.0-sqlite-fixed"
                 }
         except Exception as e:
             return {"status": "error", "error": str(e)}
@@ -617,12 +718,18 @@ class SQLiteDatabase:
             return False
 
 
-# Singleton
+# Singleton avec gestion d'erreur améliorée
 _db_instance = None
 
 def get_database_manager() -> SQLiteDatabase:
-    """Récupère l'instance singleton de la base SQLite"""
+    """Récupère l'instance singleton de la base SQLite avec gestion d'erreur"""
     global _db_instance
     if _db_instance is None:
-        _db_instance = SQLiteDatabase()
+        try:
+            _db_instance = SQLiteDatabase()
+            logger.info("✅ Instance SQLite créée avec succès")
+        except Exception as e:
+            logger.error(f"❌ Erreur création instance SQLite: {e}")
+            # Re-lever l'exception pour que l'application puisse la gérer
+            raise
     return _db_instance
