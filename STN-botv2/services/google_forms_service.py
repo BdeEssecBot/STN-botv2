@@ -1,5 +1,5 @@
 # services/google_forms_service.py
-"""Service Google Forms optimisé pour STN-bot v2"""
+"""Service Google Forms optimisé pour STN-bot v2 - VERSION CORRIGÉE"""
 
 import streamlit as st
 import requests
@@ -46,10 +46,13 @@ class GoogleFormsService:
             
             data = response.json()
             
-            # Vérifier les erreurs de l'App Script
+            # Vérifier les erreurs de l'App Script - CORRECTION ICI
             if 'error' in data:
-                logger.error(f"❌ Erreur App Script: {data['error']}")
-                return []
+                error_msg = data['error']
+                # Si c'est juste "missing formId", c'est qu'on teste sans paramètre
+                if 'missing formId' not in error_msg.lower():
+                    logger.error(f"❌ Erreur App Script: {error_msg}")
+                    return []
             
             # Extraire les réponses
             emails = data.get('emails', [])
@@ -68,7 +71,7 @@ class GoogleFormsService:
                         'firstName': person.get('firstName', '').strip(),
                         'lastName': person.get('lastName', '').strip(),
                         'fullName': f"{person.get('firstName', '')} {person.get('lastName', '')}".strip(),
-                        'timestamp': None,  # App Script v1 ne retourne pas le timestamp
+                        'timestamp': person.get('timestamp'),  # Inclure le timestamp si disponible
                         'source': 'detailed'
                     })
             
@@ -144,7 +147,7 @@ class GoogleFormsService:
     
     def test_connection(self, test_form_id: Optional[str] = None) -> Dict[str, Any]:
         """
-        Test la connexion App Script
+        Test la connexion App Script - VERSION CORRIGÉE
         
         Args:
             test_form_id: ID de formulaire pour test (optionnel)
@@ -163,21 +166,29 @@ class GoogleFormsService:
                     "form_id": test_form_id
                 }
             else:
-                # Test basique de connexion (sans formId)
+                # Test basique de connexion (sans formId) - CORRECTION ICI
                 response = requests.get(self.app_script_url, timeout=10)
                 response.raise_for_status()
                 data = response.json()
                 
+                # Vérifier si c'est la réponse attendue "missing formId"
                 if 'error' in data and 'missing formId' in str(data['error']).lower():
                     return {
                         "status": "success",
-                        "message": "App Script accessible (erreur formId attendue)",
-                        "app_script_url": self.app_script_url[:50] + "..."
+                        "message": "App Script accessible et fonctionnel",
+                        "app_script_url": self.app_script_url[:50] + "...",
+                        "note": "Erreur 'missing formId' normale lors du test sans paramètre"
+                    }
+                elif 'emails' in data or 'people' in data:
+                    return {
+                        "status": "success",
+                        "message": "App Script fonctionnel avec données",
+                        "data_preview": f"Emails: {len(data.get('emails', []))}, Personnes: {len(data.get('people', []))}"
                     }
                 else:
                     return {
                         "status": "warning",
-                        "message": f"Réponse inattendue de l'App Script: {data}",
+                        "message": f"Réponse inattendue de l'App Script",
                         "data": data
                     }
                     

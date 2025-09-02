@@ -1,10 +1,10 @@
 # config/settings.py
-"""Configuration centralisée pour STN-bot v2 - Version Ultra-Propre"""
+"""Configuration centralisée pour STN-bot v2 - Version Ultra-Propre CORRIGÉE"""
 
 import os
 import sys
 import logging
-from typing import Optional
+from typing import Optional, Dict, Any, Literal
 
 # Import et chargement des variables d'environnement
 def setup_environment() -> bool:
@@ -146,9 +146,10 @@ Lien du formulaire 👉👉 {form_url}
 Bien à toi,
 La bise Santana"""
     
-    # Configuration Streamlit (avec vérification de settings)
+    # Configuration Streamlit CORRIGÉE avec types explicites
     @classmethod
-    def get_streamlit_config(cls):
+    def get_streamlit_config(cls) -> Dict[str, Any]:
+        """Configuration Streamlit avec types corrects"""
         if settings is None:
             return {
                 "page_title": "STN-bot v2",
@@ -159,8 +160,8 @@ La bise Santana"""
         return {
             "page_title": settings.app_title,
             "page_icon": settings.app_icon,
-            "layout": "wide",
-            "initial_sidebar_state": "expanded"
+            "layout": "wide",  # Type Literal correct
+            "initial_sidebar_state": "expanded"  # Type Literal correct
         }
     
     # Cache settings (en secondes)

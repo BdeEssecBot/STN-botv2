@@ -1,11 +1,61 @@
 # database/models.py
-"""Modèles de données pour STN-bot v2 - Architecture Streamlit Native"""
+"""Modèles de données pour STN-bot v2 - Architecture Streamlit Native avec Pôles"""
 
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 import uuid
 from config.settings import AppConstants
+
+@dataclass
+class Pole:
+    """Modèle pour un pôle/département"""
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    name: str = ""
+    description: str = ""
+    color: str = "#FF6B6B"  # Couleur pour l'interface
+    is_active: bool = True
+    created_at: datetime = field(default_factory=datetime.now)
+    updated_at: datetime = field(default_factory=datetime.now)
+    
+    @property
+    def display_name(self) -> str:
+        """Nom d'affichage avec émoji"""
+        return f"📁 {self.name}"
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Conversion en dictionnaire pour Streamlit"""
+        return {
+            "id": self.id,
+            "name": self.name,
+            "description": self.description,
+            "color": self.color,
+            "is_active": self.is_active,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'Pole':
+        """Création depuis un dictionnaire"""
+        pole = cls()
+        pole.id = data.get("id", str(uuid.uuid4()))
+        pole.name = data.get("name", "")
+        pole.description = data.get("description", "")
+        pole.color = data.get("color", "#FF6B6B")
+        pole.is_active = data.get("is_active", True)
+        
+        # Parse dates
+        if data.get("created_at"):
+            pole.created_at = datetime.fromisoformat(data["created_at"])
+        if data.get("updated_at"):
+            pole.updated_at = datetime.fromisoformat(data["updated_at"])
+            
+        return pole
+    
+    def is_valid(self) -> bool:
+        """Validation des données"""
+        return bool(self.name.strip())
 
 @dataclass
 class Person:
@@ -55,10 +105,11 @@ class Person:
 
 @dataclass
 class Form:
-    """Modèle pour un formulaire"""
+    """Modèle pour un formulaire avec support des pôles"""
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     name: str = ""
     google_form_id: str = ""
+    pole_id: str = ""  # NOUVEAU: ID du pôle associé
     date_envoi: Optional[datetime] = None
     description: str = ""
     is_active: bool = True
@@ -73,6 +124,13 @@ class Form:
         return ""
     
     @property
+    def edit_url(self) -> str:
+        """URL d'édition du formulaire Google (pour voir les réponses)"""
+        if self.google_form_id:
+            return f"https://docs.google.com/forms/d/{self.google_form_id}/edit"
+        return ""
+    
+    @property
     def display_name(self) -> str:
         """Nom d'affichage avec émoji"""
         return f"{AppConstants.EMOJIS['forms']} {self.name}"
@@ -83,10 +141,12 @@ class Form:
             "id": self.id,
             "name": self.name,
             "google_form_id": self.google_form_id,
+            "pole_id": self.pole_id,  # NOUVEAU
             "date_envoi": self.date_envoi.isoformat() if self.date_envoi else None,
             "description": self.description,
             "is_active": self.is_active,
             "url": self.url,
+            "edit_url": self.edit_url,  # NOUVEAU
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None
         }
@@ -98,6 +158,7 @@ class Form:
         form.id = data.get("id", str(uuid.uuid4()))
         form.name = data.get("name", "")
         form.google_form_id = data.get("google_form_id", "")
+        form.pole_id = data.get("pole_id", "")  # NOUVEAU
         form.description = data.get("description", "")
         form.is_active = data.get("is_active", True)
         
