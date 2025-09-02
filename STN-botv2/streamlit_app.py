@@ -8,7 +8,11 @@ import plotly.graph_objects as go
 import logging
 from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional, Literal
-
+# Ajouter en haut du fichier
+from pages.auth import check_authentication, show_login_page
+from pages.message_history import show_message_history_page
+from pages.validation import show_validation_page
+from pages.user_management import show_user_management_page
 # Configuration Streamlit
 from config.settings import settings, AppConstants, validate_configuration
 from config.cache import clear_all_caches
@@ -31,66 +35,96 @@ from utils.errors import handle_error, safe_service_call
 # Logger
 logger = logging.getLogger(__name__)
 
-def main():
-    """Point d'entrée principal de l'application"""
+def main_enhanced():
+    """Version enhanced du main avec authentification"""
     
-    # Configuration de la page avec valeurs explicites et types corrects
-    config = AppConstants.get_streamlit_config()
-    
-    # Types explicites pour satisfaire Pylance
-    layout: Literal["centered", "wide"] = "wide"
-    initial_sidebar_state: Literal["auto", "expanded", "collapsed"] = "expanded"
-    
+    # Configuration de la page
     st.set_page_config(
-        page_title=config["page_title"],
-        page_icon=config["page_icon"],
-        layout=layout,
-        initial_sidebar_state=initial_sidebar_state
+        page_title="STN-bot v2 Enhanced",
+        page_icon="🔔",
+        layout="wide",
+        initial_sidebar_state="expanded"
     )
     
-    # Vérification de la configuration
-    if not validate_configuration():
-        st.error("❌ Configuration invalide - vérifiez votre fichier .env")
-        st.stop()
+    # Vérification authentification
+    if not check_authentication():
+        return
     
-    # Titre principal avec vérification
-    app_icon = settings.app_icon if settings else "🔔"
-    app_title = settings.app_title if settings else "STN-bot v2"
-    st.title(f"{app_icon} {app_title}")
+    user = st.session_state.user
     
-    # Sidebar pour la navigation
+    # Interface adaptée au rôle
+    st.title(f"🔔 STN-bot v2 - {user['username']} ({user['role']})")
+    
+    # Sidebar avec pages selon les permissions
     with st.sidebar:
         st.header("Navigation")
         
-        page = st.selectbox(
-            "Choisir une page",
-            [
-                "🏠 Dashboard", 
-                "📋 Formulaires",
-                "👥 Personnes", 
-                "🔔 Rappels",
-                "🔄 Synchronisation",
-                "⚙️ Paramètres"
-            ]
-        )
+        available_pages = get_available_pages_for_role(user['role'])
         
-        # Statut des services
+        page = st.selectbox("Choisir une page", available_pages)
+        
+        # Info utilisateur
         st.divider()
-        show_service_status()
+        st.write(f"👤 **{user['username']}**")
+        st.write(f"🏷️ Rôle: {user['role']}")
+        
+        if user['role'] != 'admin':
+            accessible_poles = get_user_accessible_poles_names(user['id'])
+            st.write(f"🏢 Pôles: {', '.join(accessible_poles)}")
+        
+        if st.button("🚪 Se déconnecter"):
+            del st.session_state.user
+            st.rerun()
     
-    # Routing vers les pages
+    # Routing avec contrôle d'accès
+    route_page_with_permissions(page, user)
+
+def get_user_accessible_poles_names(user_id: str) -> List[str]:
+    """Récupère les noms des pôles accessibles pour un utilisateur (version simplifiée)"""
+    try:
+        db = get_database_manager()
+        poles = db.get_active_poles()
+        # Pour l'instant, retourner tous les pôles (version simplifiée)
+        return [pole.name for pole in poles]
+    except Exception:
+        return ["Pôle Général"]
+
+def route_page_with_permissions(page: str, user: Dict[str, Any]):
+    """Route vers les pages avec contrôle des permissions"""
+    
     if page == "🏠 Dashboard":
         show_dashboard()
-    elif page == "📋 Formulaires":
-        show_forms_page()
-    elif page == "👥 Personnes":
-        show_people_page()
-    elif page == "🔔 Rappels":
-        show_reminders_page()
-    elif page == "🔄 Synchronisation":
-        show_sync_page()
-    elif page == "⚙️ Paramètres":
-        show_settings_page()
+    elif page == "📜 Historique des messages":
+        show_message_history_page()
+    elif page == "⏳ Validation des contacts":
+        show_validation_page()
+    elif page == "👤 Gestion des utilisateurs":
+        show_user_management_page()
+    # ... autres pages existantes
+
+def get_available_pages_for_role(role: str) -> List[str]:
+    """Retourne les pages disponibles selon le rôle"""
+    base_pages = [
+        "🏠 Dashboard",
+        "📋 Formulaires", 
+        "📜 Historique des messages"
+    ]
+    
+    if role in ['admin', 'pole_manager']:
+        base_pages.extend([
+            "👥 Personnes",
+            "⏳ Validation des contacts",
+            "🔔 Rappels",
+            "🔄 Synchronisation"
+        ])
+    
+    if role == 'admin':
+        base_pages.extend([
+            "👤 Gestion des utilisateurs",
+            "⚙️ Paramètres système"
+        ])
+    
+    return base_pages
 
 def show_service_status():
     """Affiche le statut des services dans la sidebar"""
@@ -1343,4 +1377,4 @@ def get_form_non_responders(db, form_id: str):
         return []
 
 if __name__ == "__main__":
-    main()
+    main_enhanced()
