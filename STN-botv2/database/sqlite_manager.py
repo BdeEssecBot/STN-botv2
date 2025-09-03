@@ -900,6 +900,95 @@ class SQLiteDatabase:
         
         return sync_stats
     
+    # Ajouter après les autres méthodes de gestion (vers la ligne 800-900)
+
+    def add_group(self, group) -> bool:
+        """Ajoute un groupe de personnes"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                existing = conn.execute(
+                    "SELECT id FROM people_groups WHERE LOWER(name) = LOWER(?)", 
+                    (group.name,)
+                ).fetchone()
+                if existing:
+                    logger.warning(f"Groupe déjà existant: {group.name}")
+                    return False
+                
+                conn.execute("""
+                    INSERT INTO people_groups 
+                    (id, name, description, member_ids, color, icon, is_active, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    group.id, group.name, group.description, 
+                    json.dumps(group.member_ids), group.color, group.icon,
+                    group.is_active, group.created_at.isoformat(), group.updated_at.isoformat()
+                ))
+                conn.commit()
+                logger.info(f"Groupe ajouté: {group.name}")
+                return True
+        except Exception as e:
+            logger.error(f"Erreur ajout groupe: {e}")
+            return False
+
+    def get_all_groups(self):
+        """Récupère tous les groupes"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.execute("SELECT * FROM people_groups ORDER BY name")
+                groups = []
+                for row in cursor:
+                    from database.models import PeopleGroup
+                    group = PeopleGroup(
+                        id=row['id'],
+                        name=row['name'],
+                        description=row['description'] or "",
+                        member_ids=json.loads(row['member_ids']) if row['member_ids'] else [],
+                        color=row['color'] or "#4CAF50",
+                        icon=row['icon'] or "👥",
+                        is_active=bool(row['is_active']),
+                        created_at=datetime.fromisoformat(row['created_at']),
+                        updated_at=datetime.fromisoformat(row['updated_at'])
+                    )
+                    groups.append(group)
+                return groups
+        except Exception as e:
+            logger.error(f"Erreur récupération groupes: {e}")
+            return []
+
+    def update_group(self, group_id: str, name: str, description: str, 
+                    member_ids: List[str], color: str, icon: str) -> bool:
+        """Met à jour un groupe"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute("""
+                    UPDATE people_groups 
+                    SET name = ?, description = ?, member_ids = ?, color = ?, icon = ?, updated_at = ?
+                    WHERE id = ?
+                """, (
+                    name, description, json.dumps(member_ids), color, icon,
+                    datetime.now().isoformat(), group_id
+                ))
+                success = cursor.rowcount > 0
+                conn.commit()
+                return success
+        except Exception as e:
+            logger.error(f"Erreur mise à jour groupe: {e}")
+            return False
+
+    def delete_group(self, group_id: str) -> bool:
+        """Supprime un groupe"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.execute("DELETE FROM people_groups WHERE id = ?", (group_id,))
+                success = cursor.rowcount > 0
+                conn.commit()
+                return success
+        except Exception as e:
+            logger.error(f"Erreur suppression groupe: {e}")
+            return False
+
+
     # ============ STATISTICS ============
     
     def get_statistics(self) -> ReminderStats:

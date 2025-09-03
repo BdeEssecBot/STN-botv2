@@ -9,7 +9,7 @@ from typing import List, Dict, Any
 
 # Imports locaux
 from database.sqlite_manager import get_database_manager
-from pages.auth import check_authentication
+from modules.auth import check_authentication
 
 def show_message_history_page():
     """Page d'historique des messages"""

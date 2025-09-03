@@ -319,3 +319,38 @@ class DatabaseQuery:
         stats.success_rate = (responded_count / len(responses) * 100) if responses else 0.0
         
         return stats
+    
+@dataclass
+class PeopleGroup:
+    """Modèle pour un groupe de personnes"""
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    name: str = ""
+    description: str = ""
+    member_ids: List[str] = field(default_factory=list)
+    color: str = "#4CAF50"
+    icon: str = "👥"
+    is_active: bool = True
+    created_at: datetime = field(default_factory=datetime.now)
+    updated_at: datetime = field(default_factory=datetime.now)
+    
+    @property
+    def display_name(self) -> str:
+        return f"{self.icon} {self.name}"
+    
+    @property
+    def member_count(self) -> int:
+        return len(self.member_ids)
+    
+    def add_member(self, person_id: str) -> bool:
+        if person_id not in self.member_ids:
+            self.member_ids.append(person_id)
+            self.updated_at = datetime.now()
+            return True
+        return False
+    
+    def remove_member(self, person_id: str) -> bool:
+        if person_id in self.member_ids:
+            self.member_ids.remove(person_id)
+            self.updated_at = datetime.now()
+            return True
+        return False

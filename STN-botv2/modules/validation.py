@@ -9,7 +9,7 @@ from typing import List, Dict, Any, Optional
 
 # Imports locaux
 from database.sqlite_manager import get_database_manager
-from pages.auth import check_authentication, require_role
+from modules.auth import check_authentication, require_role
 
 def show_validation_page():
     """Page de validation des nouveaux contacts"""

@@ -1,6 +1,5 @@
-
 # STN-bot v2 - Dépendances
-# Architecture Streamlit Native - Plus de dépendances Notion !
+# Architecture Streamlit Native
 
 # Core Streamlit
 streamlit==1.28.0
@@ -19,8 +18,14 @@ numpy==1.24.0
 # Date/Time utilities
 python-dateutil==2.8.2
 
-# Optional: Excel export functionality
+# Excel export functionality
 openpyxl==3.1.0
 
-# Optional: Advanced charts
+# Charts
 altair==5.1.0
+
+# Security for password hashing (pour enhanced_sqlite_manager.py)
+bcrypt==4.0.1
+
+# UUID support (standard library, mais explicite)
+# uuid est dans la stdlib Python

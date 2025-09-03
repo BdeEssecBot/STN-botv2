@@ -8,7 +8,7 @@ from typing import List, Dict, Any
 
 # Imports locaux
 from database.sqlite_manager import get_database_manager
-from pages.auth import check_authentication, require_role
+from modules.auth import check_authentication, require_role
 
 def show_user_management_page():
     """Page de gestion des utilisateurs (admin seulement)"""

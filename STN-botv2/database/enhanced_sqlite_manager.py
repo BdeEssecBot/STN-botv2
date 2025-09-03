@@ -1,10 +1,11 @@
-# 2. EXTENSION DE LA BASE DE DONNÉES AVEC NOUVELLES TABLES
-# database/enhanced_sqlite_manager.py
+# database/enhanced_sqlite_manager.py - VERSION CORRIGÉE
+"""Extension du gestionnaire SQLite avec nouvelles fonctionnalités"""
 
 import sqlite3
 import json
 import hashlib
 import secrets
+import uuid  # Import manquant
 from pathlib import Path
 from typing import List, Dict, Optional, Any, Tuple
 from datetime import datetime, timedelta
@@ -221,13 +222,13 @@ class EnhancedSQLiteDatabase:
             print(f"❌ Erreur authentification: {e}")
             return None
     
-    def create_user(self, username: str, email: str, password: str, role: str, assigned_poles: List[str] = None) -> bool:
-        """Crée un nouvel utilisateur"""
+    def create_user(self, username: str, email: str, password: str, role: str, assigned_poles: Optional[List[str]] = None) -> bool:
+        """Crée un nouvel utilisateur - CORRIGÉ"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 user_id = str(uuid.uuid4())
                 password_hash = self._hash_password(password)
-                assigned_poles = assigned_poles or []
+                assigned_poles = assigned_poles or []  # Utiliser liste vide si None
                 
                 conn.execute("""
                     INSERT INTO users (id, username, email, password_hash, role, assigned_poles, created_at)
@@ -272,8 +273,8 @@ class EnhancedSQLiteDatabase:
     
     def add_message_to_history(self, form_id: str, person_id: str, sent_by_user_id: str,
                              message_content: str, status: str = "sent",
-                             reminder_number: int = 1, template_used: str = None) -> str:
-        """Ajoute un message à l'historique"""
+                             reminder_number: int = 1, template_used: Optional[str] = None) -> str:
+        """Ajoute un message à l'historique - CORRIGÉ"""
         try:
             message_id = str(uuid.uuid4())
             with sqlite3.connect(self.db_path) as conn:
@@ -284,7 +285,8 @@ class EnhancedSQLiteDatabase:
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     message_id, form_id, person_id, sent_by_user_id, message_content,
-                    status, reminder_number, template_used, datetime.now().isoformat()
+                    status, reminder_number, template_used or '',  # Utiliser chaîne vide si None
+                    datetime.now().isoformat()
                 ))
                 conn.commit()
             return message_id
@@ -333,8 +335,8 @@ class EnhancedSQLiteDatabase:
             return []
     
     def update_message_status(self, message_id: str, status: str, 
-                            facebook_message_id: str = None, error_details: str = None) -> bool:
-        """Met à jour le statut d'un message"""
+                            facebook_message_id: Optional[str] = None, error_details: Optional[str] = None) -> bool:
+        """Met à jour le statut d'un message - CORRIGÉ"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 update_fields = ["status = ?"]
@@ -367,9 +369,9 @@ class EnhancedSQLiteDatabase:
     
     # ============ WEBHOOK ET AUTO-CAPTURE ============
     
-    def log_webhook_event(self, event_type: str, sender_psid: str, message_text: str = None,
-                         sender_profile: Dict[str, Any] = None, raw_data: Dict[str, Any] = None) -> str:
-        """Enregistre un événement webhook"""
+    def log_webhook_event(self, event_type: str, sender_psid: str, message_text: Optional[str] = None,
+                         sender_profile: Optional[Dict[str, Any]] = None, raw_data: Optional[Dict[str, Any]] = None) -> str:
+        """Enregistre un événement webhook - CORRIGÉ"""
         try:
             event_id = str(uuid.uuid4())
             with sqlite3.connect(self.db_path) as conn:
@@ -379,7 +381,7 @@ class EnhancedSQLiteDatabase:
                      raw_webhook_data, created_at)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    event_id, event_type, sender_psid, message_text,
+                    event_id, event_type, sender_psid, message_text or '',  # Chaîne vide si None
                     json.dumps(sender_profile) if sender_profile else None,
                     json.dumps(raw_data) if raw_data else None,
                     datetime.now().isoformat()
@@ -390,6 +392,31 @@ class EnhancedSQLiteDatabase:
             print(f"❌ Erreur log webhook: {e}")
             return ""
     
+    def get_person_by_psid(self, psid: str) -> Optional[Dict[str, Any]]:
+        """Récupère une personne par PSID - MÉTHODE MANQUANTE"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.execute("""
+                    SELECT * FROM people WHERE psid = ?
+                """, (psid,))
+                
+                row = cursor.fetchone()
+                if row:
+                    return {
+                        'id': row['id'],
+                        'name': row['name'],
+                        'email': row['email'],
+                        'psid': row['psid'],
+                        'status': row['status'] if 'status' in row.keys() else 'active',
+                        'created_at': row['created_at'],
+                        'updated_at': row['updated_at']
+                    }
+                return None
+        except Exception as e:
+            print(f"❌ Erreur récupération personne par PSID: {e}")
+            return None
+    
     def auto_create_person_from_webhook(self, sender_psid: str, sender_profile: Dict[str, Any],
                                       webhook_event_id: str) -> Optional[str]:
         """Crée automatiquement une personne depuis un webhook"""
@@ -397,7 +424,7 @@ class EnhancedSQLiteDatabase:
             # Vérifier si la personne existe déjà
             existing_person = self.get_person_by_psid(sender_psid)
             if existing_person:
-                return existing_person.id
+                return existing_person['id']  # Changé de .id à ['id']
             
             # Extraire les informations du profil
             first_name = sender_profile.get('first_name', '')
@@ -453,9 +480,9 @@ class EnhancedSQLiteDatabase:
             print(f"❌ Erreur récupération validations: {e}")
             return []
     
-    def validate_person(self, person_id: str, validator_user_id: str, email: str = None,
-                       validation_notes: str = None) -> bool:
-        """Valide une personne en attente"""
+    def validate_person(self, person_id: str, validator_user_id: str, email: Optional[str] = None,
+                       validation_notes: Optional[str] = None) -> bool:
+        """Valide une personne en attente - CORRIGÉ"""
         try:
             with sqlite3.connect(self.db_path) as conn:
                 update_fields = [

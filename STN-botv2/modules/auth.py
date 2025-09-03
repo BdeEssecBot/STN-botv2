@@ -1,4 +1,3 @@
-
 # 1. pages/auth.py
 """Module d'authentification pour STN-bot v2"""
 
@@ -6,13 +5,16 @@ import streamlit as st
 from datetime import datetime
 from typing import Optional, Dict, Any
 
-# Imports locaux (à ajuster selon votre structure)
-from database.enhanced_sqlite_manager import EnhancedSQLiteDatabase
-
-def get_enhanced_database_manager() -> EnhancedSQLiteDatabase:
+def get_enhanced_database_manager():
     """Récupère l'instance de la base de données étendue"""
     if "enhanced_db" not in st.session_state:
-        st.session_state.enhanced_db = EnhancedSQLiteDatabase()
+        # Import différé pour éviter les imports circulaires
+        try:
+            from database.enhanced_sqlite_manager import EnhancedSQLiteDatabase
+            st.session_state.enhanced_db = EnhancedSQLiteDatabase()
+        except ImportError as e:
+            st.error(f"❌ Impossible de charger la base de données étendue: {e}")
+            return None
     return st.session_state.enhanced_db
 
 def show_login_page() -> bool:
@@ -49,6 +51,10 @@ def show_login_page() -> bool:
             else:
                 try:
                     db = get_enhanced_database_manager()
+                    if db is None:
+                        st.error("❌ Base de données non disponible")
+                        return False
+                        
                     user = db.authenticate_user(username, password)
                     
                     if user:
