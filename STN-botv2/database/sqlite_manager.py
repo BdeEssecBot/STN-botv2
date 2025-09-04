@@ -547,32 +547,6 @@ class SQLiteDatabase:
             logger.error(f"Erreur récupération formulaire: {e}")
             return None
     
-    def get_form_by_google_id(self, google_form_id: str) -> Optional[Tuple[Form, List[str]]]:
-        """Récupère un formulaire par Google Form ID"""
-        try:
-            with sqlite3.connect(self.db_path) as conn:
-                conn.row_factory = sqlite3.Row
-                cursor = conn.execute("SELECT * FROM forms WHERE google_form_id = ?", (google_form_id,))
-                row = cursor.fetchone()
-                if row:
-                    form = Form(
-                        id=row['id'],
-                        name=row['name'],
-                        google_form_id=row['google_form_id'],
-                        pole_id=row['pole_id'] or "",
-                        description=row['description'] or "",
-                        date_envoi=datetime.fromisoformat(row['date_envoi']) if row['date_envoi'] else None,
-                        is_active=bool(row['is_active']),
-                        created_at=datetime.fromisoformat(row['created_at']),
-                        updated_at=datetime.fromisoformat(row['updated_at'])
-                    )
-                    expected_people_ids = json.loads(row['expected_people_ids']) if row['expected_people_ids'] else []
-                    return (form, expected_people_ids)
-            return None
-        except Exception as e:
-            logger.error(f"Erreur récupération formulaire par Google ID: {e}")
-            return None
-    
     # ============ RESPONSES MANAGEMENT ============
     
     def get_responses_for_form(self, form_id: str) -> List[Response]:
@@ -727,18 +701,91 @@ class SQLiteDatabase:
         except Exception as e:
             logger.error(f"Erreur récupération non-répondants: {e}")
             return []
+
+# Ajouter ces méthodes à la classe SQLiteDatabase dans sqlite_manager.py
+# (Elles semblent manquer ou mal placées)
+
+    def get_health_check(self) -> Dict[str, Any]:
+        """Vérifie la santé de la base de données"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                people_count = conn.execute("SELECT COUNT(*) FROM people").fetchone()[0]
+                poles_count = conn.execute("SELECT COUNT(*) FROM poles").fetchone()[0]
+                forms_count = conn.execute("SELECT COUNT(*) FROM forms").fetchone()[0]
+                responses_count = conn.execute("SELECT COUNT(*) FROM responses").fetchone()[0]
+                
+                # Vérifier les données orphelines
+                orphaned_responses = conn.execute("""
+                    SELECT COUNT(*) FROM responses r
+                    WHERE NOT EXISTS (SELECT 1 FROM people p WHERE p.id = r.person_id)
+                    OR NOT EXISTS (SELECT 1 FROM forms f WHERE f.id = r.form_id)
+                """).fetchone()[0]
+                
+                forms_without_pole = conn.execute("""
+                    SELECT COUNT(*) FROM forms WHERE pole_id IS NULL OR pole_id = ''
+                """).fetchone()[0]
+                
+                # Déterminer le statut
+                status = "healthy"
+                if orphaned_responses > 0:
+                    status = "warning"
+                if forms_without_pole > 0 and status == "healthy":
+                    status = "warning"
+                
+                return {
+                    "status": status,
+                    "people_count": people_count,
+                    "poles_count": poles_count,
+                    "forms_count": forms_count,
+                    "responses_count": responses_count,
+                    "orphaned_responses": orphaned_responses,
+                    "forms_without_pole": forms_without_pole,
+                    "database_version": "2.0-sqlite-poles",
+                    "database_path": str(self.db_path)
+                }
+        except Exception as e:
+            logger.error(f"Erreur health check: {e}")
+            return {
+                "status": "error", 
+                "error": str(e),
+                "database_path": str(self.db_path)
+            }
     
+    def clear_all_data(self) -> bool:
+        """Supprime toutes les données (DANGEREUX)"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                # Supprimer dans l'ordre pour respecter les clés étrangères
+                conn.execute("DELETE FROM responses")
+                conn.execute("DELETE FROM forms")
+                conn.execute("DELETE FROM people")
+                conn.execute("DELETE FROM poles")
+                conn.execute("DELETE FROM app_metadata")
+                conn.commit()
+                
+                logger.warning("🗑️ TOUTES LES DONNÉES SUPPRIMÉES")
+                
+                # Recréer les tables de base
+                self._create_tables()
+                
+                return True
+        except Exception as e:
+            logger.error(f"Erreur suppression données: {e}")
+            return False
     def get_people_needing_reminders(self, form_id: str, cooldown_hours: int = 24) -> List[Tuple[Person, Response]]:
-        """Récupère les personnes pouvant recevoir un rappel"""
+        """Récupère les personnes pouvant recevoir un rappel - VERSION CORRIGÉE"""
         try:
             cooldown_time = datetime.now() - timedelta(hours=cooldown_hours)
             
             with sqlite3.connect(self.db_path) as conn:
                 conn.row_factory = sqlite3.Row
+                
+                # REQUÊTE CORRIGÉE avec debug
                 cursor = conn.execute("""
                     SELECT p.*, r.* FROM responses r
                     JOIN people p ON r.person_id = p.id
-                    WHERE r.form_id = ? AND r.has_responded = 0 
+                    WHERE r.form_id = ? 
+                    AND r.has_responded = 0 
                     AND (r.last_reminder IS NULL OR r.last_reminder < ?)
                     AND p.psid IS NOT NULL AND p.psid != ''
                     ORDER BY p.name
@@ -755,7 +802,7 @@ class SQLiteDatabase:
                         updated_at=datetime.fromisoformat(row['updated_at'])
                     )
                     response = Response(
-                        id=row[6],
+                        id=row[6],  # Ajuster les index selon la structure
                         form_id=row[7],
                         person_id=row[8],
                         has_responded=bool(row[9]),
@@ -768,15 +815,150 @@ class SQLiteDatabase:
                     )
                     ready_for_reminder.append((person, response))
                 
+                logger.info(f"🔔 {len(ready_for_reminder)} personnes prêtes pour rappel (formulaire {form_id})")
+                
+                # DEBUG : Afficher qui est éligible
+                if ready_for_reminder:
+                    logger.info("🔍 Personnes éligibles pour rappel:")
+                    for person, response in ready_for_reminder:
+                        logger.info(f"  - {person.name} (PSID: {person.psid[:10]}..., has_responded: {response.has_responded})")
+                else:
+                    # DEBUG : Pourquoi personne n'est éligible ?
+                    cursor = conn.execute("""
+                        SELECT p.name, p.psid, r.has_responded, r.last_reminder
+                        FROM responses r
+                        JOIN people p ON r.person_id = p.id
+                        WHERE r.form_id = ?
+                    """, (form_id,))
+                    
+                    logger.info("🔍 DEBUG - Toutes les réponses pour ce formulaire:")
+                    for row in cursor:
+                        psid_status = "OK" if row[1] else "MANQUANT"
+                        reminder_status = "Jamais" if not row[3] else row[3]
+                        logger.info(f"  - {row[0]}: responded={row[2]}, psid={psid_status}, last_reminder={reminder_status}")
+                
                 return ready_for_reminder
+                
         except Exception as e:
-            logger.error(f"Erreur récupération rappels nécessaires: {e}")
-            return []
-    
-    # ============ SYNC GOOGLE FORMS ============
-    
+            logger.error(f"💥 Erreur récupération rappels nécessaires: {e}")
+            return []  
+        # ============ SYNC GOOGLE FORMS ============
+
+        def debug_form_status(self, form_id: str) -> Dict[str, Any]:
+            """Debug complet du statut d'un formulaire - NOUVELLE MÉTHODE"""
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.row_factory = sqlite3.Row
+                    
+                    # Info du formulaire
+                    form_data = self.get_form_by_id(form_id)
+                    if not form_data:
+                        return {"error": "Formulaire non trouvé"}
+                    
+                    form, expected_people_ids = form_data
+                    
+                    # Détails des réponses
+                    cursor = conn.execute("""
+                        SELECT p.name, p.email, p.psid, r.has_responded, r.last_reminder, r.reminder_count
+                        FROM responses r
+                        JOIN people p ON r.person_id = p.id
+                        WHERE r.form_id = ?
+                        ORDER BY p.name
+                    """, (form_id,))
+                    
+                    responses_details = []
+                    for row in cursor:
+                        responses_details.append({
+                            "name": row[0],
+                            "email": row[1] or "❌ Manquant",
+                            "psid": "✅ OK" if row[2] else "❌ Manquant",
+                            "has_responded": "✅ Oui" if row[3] else "❌ Non",
+                            "last_reminder": row[4] or "Jamais",
+                            "reminder_count": row[5] or 0
+                        })
+                    
+                    # Personnes éligibles pour rappel
+                    eligible = self.get_people_needing_reminders(form_id, 24)
+                    
+                    return {
+                        "form_name": form.name,
+                        "google_form_id": form.google_form_id,
+                        "expected_people_count": len(expected_people_ids),
+                        "responses_details": responses_details,
+                        "eligible_for_reminders": len(eligible),
+                        "eligible_names": [p.name for p, _ in eligible]
+                    }
+            
+            except Exception as e:
+                logger.error(f"Erreur debug formulaire: {e}")
+                return {"error": str(e)}
+        
+        def get_database_info(self) -> Dict[str, Any]:
+            """Informations sur la base de données"""
+            try:
+                return {
+                    "database_path": str(self.db_path),
+                    "exists": self.db_path.exists(),
+                    "size_bytes": self.db_path.stat().st_size if self.db_path.exists() else 0,
+                    "sqlite_version": sqlite3.sqlite_version,
+                    "python_sqlite_version": getattr(sqlite3, 'version', 'Unknown')
+                }
+            except Exception as e:
+                return {"error": str(e)}
+        
+        def vacuum_database(self) -> bool:
+            """Optimise la base de données (VACUUM)"""
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.execute("VACUUM")
+                    conn.commit()
+                    logger.info("🧹 Base de données optimisée (VACUUM)")
+                    return True
+            except Exception as e:
+                logger.error(f"Erreur VACUUM: {e}")
+                return False
+        
+        def export_database_to_json(self) -> Dict[str, Any]:
+            """Exporte toute la base en JSON pour backup"""
+            try:
+                export_data = {
+                    "export_timestamp": datetime.now().isoformat(),
+                    "poles": [],
+                    "people": [],
+                    "forms": [],
+                    "responses": []
+                }
+                
+                # Exporter les pôles
+                poles = self.get_all_poles()
+                export_data["poles"] = [pole.to_dict() for pole in poles]
+                
+                # Exporter les personnes
+                people = self.get_all_people()
+                export_data["people"] = [person.to_dict() for person in people]
+                
+                # Exporter les formulaires
+                forms_data = self.get_all_forms()
+                for form, expected_people_ids in forms_data:
+                    form_dict = form.to_dict()
+                    form_dict["expected_people_ids"] = expected_people_ids
+                    export_data["forms"].append(form_dict)
+                
+                # Exporter les réponses
+                with sqlite3.connect(self.db_path) as conn:
+                    conn.row_factory = sqlite3.Row
+                    cursor = conn.execute("SELECT * FROM responses")
+                    for row in cursor:
+                        export_data["responses"].append(dict(row))
+                
+                return export_data
+                
+            except Exception as e:
+                logger.error(f"Erreur export JSON: {e}")
+                return {"error": str(e)}
+            
     def sync_google_forms_responses(self, google_responses: Dict[str, List[Dict]]) -> Dict[str, int]:
-        """Synchronise avec Google Forms"""
+        """Synchronise avec Google Forms - VERSION COMPLÈTE"""
         sync_stats = {"updated": 0, "created": 0, "errors": 0}
         
         try:
@@ -795,15 +977,20 @@ class SQLiteDatabase:
                     form, expected_people_ids = form_data
                     logger.info(f"📝 Formulaire trouvé: {form.name} avec {len(expected_people_ids)} personnes attendues")
                     
+                    # Récupérer les emails qui ont répondu selon Google Forms
+                    responded_emails = set()
+                    
                     for response_data in responses_data:
                         email = response_data.get('email', '').lower().strip()
                         if not email:
                             logger.warning("❌ Réponse sans email, ignorée")
                             continue
                         
+                        responded_emails.add(email)
                         logger.info(f"📧 Traitement réponse: {email}")
                         
                         person = None
+                        # Chercher parmi les personnes attendues d'abord
                         for person_id in expected_people_ids:
                             candidate_person = self.get_person_by_id(person_id)
                             if candidate_person and candidate_person.email:
@@ -812,11 +999,13 @@ class SQLiteDatabase:
                                     logger.info(f"✅ Personne trouvée parmi les attendues: {person.name}")
                                     break
                         
+                        # Sinon chercher dans toute la base
                         if not person:
                             person = self.get_person_by_email(email)
                             if person:
                                 logger.info(f"✅ Personne trouvée dans la base: {person.name}")
                         
+                        # Créer la personne si elle n'existe pas
                         if not person:
                             full_name = response_data.get('fullName', '').strip()
                             first_name = response_data.get('firstName', '').strip()
@@ -836,6 +1025,7 @@ class SQLiteDatabase:
                                 sync_stats["created"] += 1
                                 logger.info(f"✅ Personne créée: {person.name}")
                                 
+                                # L'ajouter aux personnes attendues
                                 expected_people_ids.append(person.id)
                                 
                                 conn.execute("""
@@ -848,6 +1038,7 @@ class SQLiteDatabase:
                                     form.id
                                 ))
                                 
+                                # Créer une réponse pour cette personne
                                 response = Response(
                                     form_id=form.id,
                                     person_id=person.id,
@@ -867,6 +1058,7 @@ class SQLiteDatabase:
                                 logger.error(f"❌ Échec création personne: {name}")
                                 continue
                         
+                        # Marquer comme ayant répondu
                         response_date = None
                         if response_data.get('timestamp'):
                             try:
@@ -884,7 +1076,27 @@ class SQLiteDatabase:
                         else:
                             sync_stats["errors"] += 1
                             logger.error(f"❌ Échec marquage réponse pour {person.name}")
+                    
+                    # IMPORTANT: Marquer comme N'AYANT PAS répondu ceux qui ne sont pas dans Google Forms
+                    logger.info(f"🔄 Vérification des non-répondants...")
+                    
+                    for person_id in expected_people_ids:
+                        person = self.get_person_by_id(person_id)
+                        if person and person.email:
+                            person_email = person.email.lower().strip()
+                            if person_email not in responded_emails:
+                                # Cette personne n'a PAS répondu, s'assurer qu'elle est marquée comme telle
+                                cursor = conn.execute("""
+                                    UPDATE responses 
+                                    SET has_responded = 0, response_date = NULL, updated_at = ?
+                                    WHERE form_id = ? AND person_id = ? AND has_responded = 1
+                                """, (datetime.now().isoformat(), form.id, person_id))
+                                
+                                if cursor.rowcount > 0:
+                                    logger.info(f"🔄 {person.name} re-marqué comme n'ayant PAS répondu")
+                                    sync_stats["updated"] += 1
                 
+                # Mettre à jour les métadonnées
                 conn.execute("""
                     INSERT OR REPLACE INTO app_metadata (key, value, updated_at)
                     VALUES ('last_sync', ?, ?)
@@ -899,7 +1111,297 @@ class SQLiteDatabase:
             sync_stats["errors"] += 1
         
         return sync_stats
+
+    def get_statistics(self) -> ReminderStats:
+        """Calcule les statistiques globales"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                # Compter les personnes
+                cursor = conn.execute("SELECT COUNT(*) FROM people")
+                total_people = cursor.fetchone()[0]
+                
+                # Compter les réponses
+                cursor = conn.execute("SELECT COUNT(*) FROM responses")
+                total_responses = cursor.fetchone()[0]
+                
+                # Compter les rappels en attente
+                cursor = conn.execute("SELECT COUNT(*) FROM responses WHERE has_responded = 0")
+                pending_reminders = cursor.fetchone()[0]
+                
+                # Rappels envoyés aujourd'hui
+                today = datetime.now().date().isoformat()
+                cursor = conn.execute("""
+                    SELECT COUNT(*) FROM responses 
+                    WHERE DATE(last_reminder) = ?
+                """, (today,))
+                sent_today = cursor.fetchone()[0]
+                
+                # Taux de succès
+                cursor = conn.execute("SELECT COUNT(*) FROM responses WHERE has_responded = 1")
+                responded = cursor.fetchone()[0]
+                success_rate = (responded / total_responses * 100) if total_responses > 0 else 0
+                
+                # Dernière synchronisation
+                cursor = conn.execute("SELECT value FROM app_metadata WHERE key = 'last_sync'")
+                last_sync_row = cursor.fetchone()
+                last_sync = datetime.fromisoformat(last_sync_row[0]) if last_sync_row else None
+                
+                return ReminderStats(
+                    total_people=total_people,
+                    total_responses=total_responses,
+                    pending_reminders=pending_reminders,
+                    sent_today=sent_today,
+                    success_rate=success_rate,
+                    last_sync=last_sync
+                )
+        except Exception as e:
+            logger.error(f"Erreur calcul statistiques: {e}")
+            return ReminderStats()
+
+    def get_form_by_google_id(self, google_form_id: str) -> Optional[Tuple[Form, List[str]]]:
+        """Récupère un formulaire par Google Form ID - AJOUT SI MANQUANT"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                cursor = conn.execute("SELECT * FROM forms WHERE google_form_id = ?", (google_form_id,))
+                row = cursor.fetchone()
+                if row:
+                    form = Form(
+                        id=row['id'],
+                        name=row['name'],
+                        google_form_id=row['google_form_id'],
+                        pole_id=row['pole_id'] or "",
+                        description=row['description'] or "",
+                        date_envoi=datetime.fromisoformat(row['date_envoi']) if row['date_envoi'] else None,
+                        is_active=bool(row['is_active']),
+                        created_at=datetime.fromisoformat(row['created_at']),
+                        updated_at=datetime.fromisoformat(row['updated_at'])
+                    )
+                    expected_people_ids = json.loads(row['expected_people_ids']) if row['expected_people_ids'] else []
+                    return (form, expected_people_ids)
+            return None
+        except Exception as e:
+            logger.error(f"Erreur récupération formulaire par Google ID: {e}")
+            return None
+
+
+def debug_form_status(self, form_id: str) -> Dict[str, Any]:
+    """Debug complet du statut d'un formulaire"""
+    try:
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            
+            # Info du formulaire
+            form_data = self.get_form_by_id(form_id)
+            if not form_data:
+                return {"error": "Formulaire non trouvé"}
+            
+            form, expected_people_ids = form_data
+            
+            # Détails des réponses
+            cursor = conn.execute("""
+                SELECT p.name, p.email, p.psid, r.has_responded, r.last_reminder, r.reminder_count
+                FROM responses r
+                JOIN people p ON r.person_id = p.id
+                WHERE r.form_id = ?
+                ORDER BY p.name
+            """, (form_id,))
+            
+            responses_details = []
+            for row in cursor:
+                responses_details.append({
+                    "name": row[0],
+                    "email": row[1] or "❌ Manquant",
+                    "psid": "✅ OK" if row[2] else "❌ Manquant",
+                    "has_responded": "✅ Oui" if row[3] else "❌ Non",
+                    "last_reminder": row[4] or "Jamais",
+                    "reminder_count": row[5] or 0
+                })
+            
+            # Personnes éligibles pour rappel
+            eligible = self.get_people_needing_reminders(form_id, 24)
+            
+            return {
+                "form_name": form.name,
+                "google_form_id": form.google_form_id,
+                "expected_people_count": len(expected_people_ids),
+                "responses_details": responses_details,
+                "eligible_for_reminders": len(eligible),
+                "eligible_names": [p.name for p, _ in eligible]
+            }
     
+    except Exception as e:
+        return {"error": str(e)}
+
+def sync_google_forms_responses(self, google_responses: Dict[str, List[Dict]]) -> Dict[str, int]:
+    """Synchronise avec Google Forms - VERSION CORRIGÉE"""
+    sync_stats = {"updated": 0, "created": 0, "errors": 0}
+    
+    try:
+        logger.info(f"🔄 Début synchronisation avec {len(google_responses)} formulaires")
+        
+        with sqlite3.connect(self.db_path) as conn:
+            for google_form_id, responses_data in google_responses.items():
+                logger.info(f"📋 Traitement formulaire Google: {google_form_id}")
+                
+                form_data = self.get_form_by_google_id(google_form_id)
+                if not form_data:
+                    logger.warning(f"❌ Formulaire non trouvé pour Google ID: {google_form_id}")
+                    sync_stats["errors"] += 1
+                    continue
+                
+                form, expected_people_ids = form_data
+                logger.info(f"📝 Formulaire trouvé: {form.name} avec {len(expected_people_ids)} personnes attendues")
+                
+                # NOUVEAU : Récupérer toutes les réponses existantes pour ce formulaire
+                existing_responses = {}
+                cursor = conn.execute("""
+                    SELECT r.person_id, r.has_responded, p.email 
+                    FROM responses r
+                    JOIN people p ON r.person_id = p.id
+                    WHERE r.form_id = ?
+                """, (form.id,))
+                
+                for row in cursor:
+                    existing_responses[row[2].lower().strip() if row[2] else ""] = {
+                        "person_id": row[0],
+                        "was_responded": row[1]
+                    }
+                
+                logger.info(f"📊 {len(existing_responses)} réponses existantes trouvées")
+                
+                # Traiter chaque réponse Google Forms
+                responded_emails = set()
+                
+                for response_data in responses_data:
+                    email = response_data.get('email', '').lower().strip()
+                    if not email:
+                        logger.warning("❌ Réponse sans email, ignorée")
+                        continue
+                    
+                    responded_emails.add(email)
+                    logger.info(f"📧 Traitement réponse: {email}")
+                    
+                    # Chercher la personne
+                    person = None
+                    for person_id in expected_people_ids:
+                        candidate_person = self.get_person_by_id(person_id)
+                        if candidate_person and candidate_person.email:
+                            if candidate_person.email.lower().strip() == email:
+                                person = candidate_person
+                                logger.info(f"✅ Personne trouvée parmi les attendues: {person.name}")
+                                break
+                    
+                    if not person:
+                        person = self.get_person_by_email(email)
+                        if person:
+                            logger.info(f"✅ Personne trouvée dans la base: {person.name}")
+                    
+                    # Si la personne n'existe pas, la créer
+                    if not person:
+                        full_name = response_data.get('fullName', '').strip()
+                        first_name = response_data.get('firstName', '').strip()
+                        last_name = response_data.get('lastName', '').strip()
+                        
+                        if full_name:
+                            name = full_name
+                        elif first_name or last_name:
+                            name = f"{first_name} {last_name}".strip()
+                        else:
+                            name = email.split('@')[0]
+                        
+                        logger.info(f"➕ Création nouvelle personne: {name} ({email})")
+                        
+                        person = Person(name=name, email=email)
+                        if self.add_person(person):
+                            sync_stats["created"] += 1
+                            logger.info(f"✅ Personne créée: {person.name}")
+                            
+                            expected_people_ids.append(person.id)
+                            
+                            conn.execute("""
+                                UPDATE forms 
+                                SET expected_people_ids = ?, updated_at = ?
+                                WHERE id = ?
+                            """, (
+                                json.dumps(expected_people_ids),
+                                datetime.now().isoformat(),
+                                form.id
+                            ))
+                            
+                            response = Response(
+                                form_id=form.id,
+                                person_id=person.id,
+                                has_responded=False
+                            )
+                            conn.execute("""
+                                INSERT INTO responses (id, form_id, person_id, has_responded, 
+                                                     created_at, updated_at)
+                                VALUES (?, ?, ?, ?, ?, ?)
+                            """, (
+                                response.id, response.form_id, response.person_id, response.has_responded,
+                                response.created_at.isoformat(), response.updated_at.isoformat()
+                            ))
+                            logger.info(f"✅ Réponse créée pour {person.name}")
+                        else:
+                            sync_stats["errors"] += 1
+                            logger.error(f"❌ Échec création personne: {name}")
+                            continue
+                    
+                    # Marquer comme ayant répondu
+                    response_date = None
+                    if response_data.get('timestamp'):
+                        try:
+                            response_date = datetime.fromisoformat(response_data['timestamp'].replace('Z', '+00:00'))
+                        except:
+                            response_date = datetime.now()
+                            logger.warning(f"⚠️ Timestamp invalide, utilisation de maintenant")
+                    else:
+                        response_date = datetime.now()
+                    
+                    success = self.mark_as_responded(form.id, person.id, response_date)
+                    if success:
+                        sync_stats["updated"] += 1
+                        logger.info(f"✅ {person.name} marqué comme ayant répondu")
+                    else:
+                        sync_stats["errors"] += 1
+                        logger.error(f"❌ Échec marquage réponse pour {person.name}")
+                
+                # NOUVEAU : Marquer comme N'AYANT PAS répondu ceux qui ne sont pas dans les réponses
+                logger.info(f"🔄 Vérification des non-répondants...")
+                
+                for person_id in expected_people_ids:
+                    person = self.get_person_by_id(person_id)
+                    if person and person.email:
+                        person_email = person.email.lower().strip()
+                        if person_email not in responded_emails:
+                            # Cette personne n'a PAS répondu, s'assurer qu'elle est marquée comme telle
+                            cursor = conn.execute("""
+                                UPDATE responses 
+                                SET has_responded = 0, response_date = NULL, updated_at = ?
+                                WHERE form_id = ? AND person_id = ? AND has_responded = 1
+                            """, (datetime.now().isoformat(), form.id, person_id))
+                            
+                            if cursor.rowcount > 0:
+                                logger.info(f"🔄 {person.name} re-marqué comme n'ayant PAS répondu")
+                                sync_stats["updated"] += 1
+            
+            # Mettre à jour les métadonnées
+            conn.execute("""
+                INSERT OR REPLACE INTO app_metadata (key, value, updated_at)
+                VALUES ('last_sync', ?, ?)
+            """, (datetime.now().isoformat(), datetime.now().isoformat()))
+            conn.commit()
+            
+            logger.info(f"🎉 Synchronisation terminée: {sync_stats['updated']} mises à jour, "
+                       f"{sync_stats['created']} créations, {sync_stats['errors']} erreurs")
+    
+    except Exception as e:
+        logger.error(f"💥 Erreur critique synchronisation: {e}")
+        sync_stats["errors"] += 1
+    
+    return sync_stats
+
     # Ajouter après les autres méthodes de gestion (vers la ligne 800-900)
 
     def add_group(self, group) -> bool:
